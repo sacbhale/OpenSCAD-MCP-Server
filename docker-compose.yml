@@ -1,0 +1,87 @@
+services:
+  openscad-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openscad-mcp-server
+    ports:
+      - "8080:8000"
+    volumes:
+      # Persistent data volumes
+      - ./output:/app/output
+      - ./scad:/app/scad
+      - ./templates:/app/templates
+      - ./static:/app/static
+      # Optional: Mount custom configuration
+      - ./.env:/app/.env:ro
+    environment:
+      # API Keys (set these in your .env file)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - VENICE_API_KEY=${VENICE_API_KEY:-}
+      
+      # CUDA MVS Configuration
+      - CUDA_MVS_USE_GPU=${CUDA_MVS_USE_GPU:-false}
+      - CUDA_MVS_PATH=${CUDA_MVS_PATH:-/app/cuda-mvs}
+      
+      # Remote CUDA MVS Configuration
+      - REMOTE_CUDA_MVS_ENABLED=${REMOTE_CUDA_MVS_ENABLED:-true}
+      - REMOTE_CUDA_MVS_USE_LAN_DISCOVERY=${REMOTE_CUDA_MVS_USE_LAN_DISCOVERY:-true}
+      - REMOTE_CUDA_MVS_SERVER_URL=${REMOTE_CUDA_MVS_SERVER_URL:-}
+      - REMOTE_CUDA_MVS_API_KEY=${REMOTE_CUDA_MVS_API_KEY:-}
+      - REMOTE_CUDA_MVS_DISCOVERY_PORT=${REMOTE_CUDA_MVS_DISCOVERY_PORT:-8765}
+      
+      # Image Approval Configuration
+      - IMAGE_APPROVAL_ENABLED=${IMAGE_APPROVAL_ENABLED:-true}
+      - IMAGE_APPROVAL_AUTO_APPROVE=${IMAGE_APPROVAL_AUTO_APPROVE:-false}
+      - IMAGE_APPROVAL_TIMEOUT=${IMAGE_APPROVAL_TIMEOUT:-300}
+      - IMAGE_APPROVAL_MIN_IMAGES=${IMAGE_APPROVAL_MIN_IMAGES:-3}
+      
+      # Multi-view Configuration
+      - MULTI_VIEW_DEFAULT_NUM_VIEWS=${MULTI_VIEW_DEFAULT_NUM_VIEWS:-4}
+      - MULTI_VIEW_MIN_NUM_VIEWS=${MULTI_VIEW_MIN_NUM_VIEWS:-3}
+      - MULTI_VIEW_MAX_NUM_VIEWS=${MULTI_VIEW_MAX_NUM_VIEWS:-8}
+      
+      # NLP Configuration
+      - NLP_ENABLE_INTERACTIVE_PARAMS=${NLP_ENABLE_INTERACTIVE_PARAMS:-true}
+      
+      # Python environment
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on: []
+    networks:
+      - openscad-network
+
+# Optional: Add a reverse proxy for production
+# nginx:
+#   image: nginx:alpine
+#   container_name: openscad-nginx
+#   ports:
+#     - "80:80"
+#     - "443:443"
+#   volumes:
+#     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+#     - ./ssl:/etc/nginx/ssl:ro
+#   depends_on:
+#     - openscad-mcp-server
+#   networks:
+#     - openscad-network
+
+networks:
+  openscad-network:
+    driver: bridge
+
+volumes:
+  # Persistent volumes for data
+  openscad_output:
+    driver: local
+  openscad_scad:
+    driver: local 

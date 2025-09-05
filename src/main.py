@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
-from mcp import MCPServer, MCPTool, MCPToolCall, MCPToolCallResult
+from mcp.server.fastmcp import FastMCP
 
 # Import configuration
 from src.config import *
@@ -23,6 +23,12 @@ from src.visualization.headless_renderer import HeadlessRenderer
 from src.printer_discovery.printer_discovery import PrinterDiscovery, PrinterInterface
 from src.ai.venice_api import VeniceImageGenerator
 from src.ai.sam_segmentation import SAMSegmenter
+from src.ai.gemini_api import GeminiImageGenerator
+from src.models.cuda_mvs import CUDAMultiViewStereo
+from src.workflow.image_approval import ImageApprovalTool
+from src.workflow.multi_view_to_model_pipeline import MultiViewToModelPipeline
+from src.remote.connection_manager import CUDAMVSConnectionManager
+from src.main_remote import cancel_job, get_job_status, download_model
 
 # Configure logging
 logging.basicConfig(
@@ -62,7 +68,16 @@ printer_discovery = PrinterDiscovery()
 # Initialize AI components
 venice_generator = VeniceImageGenerator(VENICE_API_KEY, IMAGES_DIR)
 gemini_generator = GeminiImageGenerator(GEMINI_API_KEY, IMAGES_DIR)
-cuda_mvs = CUDAMultiViewStereo(CUDA_MVS_PATH, MODELS_DIR, use_gpu=CUDA_MVS_USE_GPU)
+
+# Initialize CUDA MVS (optional - may not be available in Docker)
+cuda_mvs = None
+try:
+    cuda_mvs = CUDAMultiViewStereo(CUDA_MVS_PATH, MODELS_DIR)
+    logger.info("CUDA MVS initialized successfully")
+except FileNotFoundError as e:
+    logger.warning(f"CUDA MVS not available: {e}")
+    logger.info("CUDA MVS features will be disabled")
+
 image_approval = ImageApprovalTool(APPROVED_IMAGES_DIR)
 
 # Initialize remote processing components if enabled
@@ -72,17 +87,21 @@ if REMOTE_CUDA_MVS["ENABLED"]:
     remote_connection_manager = CUDAMVSConnectionManager(
         api_key=REMOTE_CUDA_MVS["API_KEY"],
         discovery_port=REMOTE_CUDA_MVS["DISCOVERY_PORT"],
-        use_lan_discovery=REMOTE_CUDA_MVS["USE_LAN_DISCOVERY"],
-        server_url=REMOTE_CUDA_MVS["SERVER_URL"] if REMOTE_CUDA_MVS["SERVER_URL"] else None
+        auto_discover=REMOTE_CUDA_MVS["USE_LAN_DISCOVERY"]
     )
 
 # Initialize workflow pipeline
-multi_view_pipeline = MultiViewToModelPipeline(
-    gemini_generator=gemini_generator,
-    cuda_mvs=cuda_mvs,
-    approval_tool=image_approval,
-    output_dir=OUTPUT_DIR
-)
+multi_view_pipeline = None
+if cuda_mvs is not None:
+    multi_view_pipeline = MultiViewToModelPipeline(
+        gemini_generator=gemini_generator,
+        cuda_mvs=cuda_mvs,
+        approval_tool=image_approval,
+        output_dir=OUTPUT_DIR
+    )
+    logger.info("Multi-view pipeline initialized successfully")
+else:
+    logger.warning("Multi-view pipeline disabled (CUDA MVS not available)")
 
 # SAM2 segmenter will be initialized on first use to avoid loading the model unnecessarily
 sam_segmenter = None
@@ -112,7 +131,7 @@ approved_images = {}
 remote_jobs = {}
 
 # Create MCP server
-mcp_server = MCPServer()
+mcp_server = FastMCP("OpenSCAD-MCP-Server")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -245,7 +264,7 @@ with open("templates/preview.html", "w") as f:
     """)
 
 # Define MCP tools
-@mcp_server.tool
+@mcp_server.tool()
 def create_3d_model(description: str) -> Dict[str, Any]:
     """
     Create a 3D model from a natural language description.
@@ -305,7 +324,7 @@ def create_3d_model(description: str) -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def modify_3d_model(model_id: str, modifications: str) -> Dict[str, Any]:
     """
     Modify an existing 3D model.
@@ -374,7 +393,7 @@ def modify_3d_model(model_id: str, modifications: str) -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     """
     Export a 3D model to a specific format.
@@ -426,7 +445,7 @@ def export_model(model_id: str, format: str = "csg") -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def discover_printers() -> Dict[str, Any]:
     """
     Discover 3D printers on the network.
@@ -448,7 +467,7 @@ def discover_printers() -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def connect_to_printer(printer_id: str) -> Dict[str, Any]:
     """
     Connect to a 3D printer.
@@ -486,7 +505,7 @@ def connect_to_printer(printer_id: str) -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def print_model(model_id: str, printer_id: str) -> Dict[str, Any]:
     """
     Print a 3D model on a connected printer.
@@ -535,7 +554,7 @@ def print_model(model_id: str, printer_id: str) -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def get_printer_status(printer_id: str) -> Dict[str, Any]:
     """
     Get the status of a printer.
@@ -569,7 +588,7 @@ def get_printer_status(printer_id: str) -> Dict[str, Any]:
     
     return response
 
-@mcp_server.tool
+@mcp_server.tool()
 def cancel_print_job(printer_id: str, job_id: str) -> Dict[str, Any]:
     """
     Cancel a print job.
@@ -609,7 +628,7 @@ def cancel_print_job(printer_id: str, job_id: str) -> Dict[str, Any]:
     return response
 
 # Add Venice.ai image generation tool
-@mcp_server.tool
+@mcp_server.tool()
 def generate_image(prompt: str, model: str = "fluently-xl") -> Dict[str, Any]:
     """
     Generate an image using Venice.ai's image generation models.
@@ -651,7 +670,7 @@ def generate_image(prompt: str, model: str = "fluently-xl") -> Dict[str, Any]:
     return response
 
 # Add SAM2 segmentation tool
-@mcp_server.tool
+@mcp_server.tool()
 def segment_image(image_path: str, points: Optional[List[Tuple[int, int]]] = None) -> Dict[str, Any]:
     """
     Segment objects in an image using SAM2 (Segment Anything Model 2).
@@ -693,7 +712,7 @@ def segment_image(image_path: str, points: Optional[List[Tuple[int, int]]] = Non
 
 
 # Add Google Gemini image generation tool
-@mcp_server.tool
+@mcp_server.tool()
 def generate_image_gemini(prompt: str, model: str = GEMINI_MODEL) -> Dict[str, Any]:
     """
     Generate an image using Google Gemini's image generation models.
@@ -724,7 +743,7 @@ def generate_image_gemini(prompt: str, model: str = GEMINI_MODEL) -> Dict[str, A
 
 
 # Add multi-view image generation tool
-@mcp_server.tool
+@mcp_server.tool()
 def generate_multi_view_images(prompt: str, num_views: int = 4) -> Dict[str, Any]:
     """
     Generate multiple views of the same 3D object using Google Gemini.
@@ -783,7 +802,7 @@ def generate_multi_view_images(prompt: str, num_views: int = 4) -> Dict[str, Any
 
 
 # Add image approval tool
-@mcp_server.tool
+@mcp_server.tool()
 def approve_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
     """
     Approve an image for 3D model generation.
@@ -848,7 +867,7 @@ def approve_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
 
 
 # Add image rejection tool
-@mcp_server.tool
+@mcp_server.tool()
 def reject_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
     """
     Reject an image for 3D model generation.
@@ -915,7 +934,7 @@ def reject_image(multi_view_id: str, view_id: str) -> Dict[str, Any]:
 
 
 # Add 3D model generation from approved images tool
-@mcp_server.tool
+@mcp_server.tool()
 def create_3d_model_from_images(multi_view_id: str, output_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Create a 3D model from approved multi-view images.
@@ -1076,6 +1095,9 @@ def create_3d_model_from_images(multi_view_id: str, output_name: Optional[str] =
             }
     else:
         # Use local CUDA MVS processing
+        if cuda_mvs is None:
+            raise ValueError("CUDA MVS is not available. Please use remote processing or install CUDA MVS.")
+        
         result = cuda_mvs.process_images(
             approved_image_paths,
             output_name=output_name,
@@ -1115,7 +1137,7 @@ def create_3d_model_from_images(multi_view_id: str, output_name: Optional[str] =
 
 
 # Add complete pipeline tool (text to 3D model)
-@mcp_server.tool
+@mcp_server.tool()
 def create_3d_model_from_text(prompt: str, num_views: int = 4, wait_for_completion: bool = True) -> Dict[str, Any]:
     """
     Create a 3D model from a text description using the complete pipeline.
@@ -1158,7 +1180,7 @@ def create_3d_model_from_text(prompt: str, num_views: int = 4, wait_for_completi
 
 
 # Add remote CUDA MVS server discovery tool
-@mcp_server.tool
+@mcp_server.tool()
 def discover_remote_cuda_mvs_servers() -> Dict[str, Any]:
     """
     Discover remote CUDA MVS servers on the network.
@@ -1181,7 +1203,7 @@ def discover_remote_cuda_mvs_servers() -> Dict[str, Any]:
 
 
 # Add remote job status tool
-@mcp_server.tool
+@mcp_server.tool()
 def get_remote_job_status(job_id: str) -> Dict[str, Any]:
     """
     Get the status of a remote CUDA MVS processing job.
@@ -1220,7 +1242,7 @@ def get_remote_job_status(job_id: str) -> Dict[str, Any]:
 
 
 # Add remote model download tool
-@mcp_server.tool
+@mcp_server.tool()
 def download_remote_model_result(job_id: str) -> Dict[str, Any]:
     """
     Download a processed model from a remote CUDA MVS server.
@@ -1274,7 +1296,7 @@ def download_remote_model_result(job_id: str) -> Dict[str, Any]:
 
 
 # Add remote job cancellation tool
-@mcp_server.tool
+@mcp_server.tool()
 def cancel_remote_job(job_id: str) -> Dict[str, Any]:
     """
     Cancel a remote CUDA MVS processing job.
@@ -1336,21 +1358,20 @@ async def handle_tool_call(request: Request) -> JSONResponse:
     if "tool_name" not in data:
         raise HTTPException(status_code=400, detail="Tool name is required")
     
-    # Check if tool exists
-    tool_name = data["tool_name"]
-    if tool_name not in mcp_server.tools:
-        raise HTTPException(status_code=404, detail=f"Tool {tool_name} not found")
-    
     # Get tool parameters
+    tool_name = data["tool_name"]
     tool_params = data.get("tool_params", {})
     
-    # Call tool
-    try:
-        result = mcp_server.tools[tool_name](**tool_params)
-        return JSONResponse(content=result)
-    except Exception as e:
-        logger.error(f"Error calling tool {tool_name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Note: FastMCP handles tool registration and calling internally
+    # This endpoint is for compatibility but may not work with all tools
+    # Consider using the MCP protocol directly instead
+    
+    return JSONResponse(content={
+        "error": "Tool calling via HTTP not fully implemented", 
+        "suggestion": "Use MCP protocol directly or individual tool endpoints",
+        "tool_name": tool_name,
+        "tool_params": tool_params
+    })
 
 @app.get("/ui/preview/{model_id}")
 async def preview_model(request: Request, model_id: str) -> Response:
@@ -1448,7 +1469,10 @@ async def root() -> Dict[str, Any]:
         "name": "OpenSCAD MCP Server",
         "version": "1.0.0",
         "description": "MCP server for OpenSCAD",
-        "tools": list(mcp_server.tools.keys())
+        "status": "running",
+        "cuda_mvs_available": cuda_mvs is not None,
+        "remote_cuda_mvs_enabled": REMOTE_CUDA_MVS["ENABLED"],
+        "multi_view_pipeline_available": multi_view_pipeline is not None
     }
 
 # Run server

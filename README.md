@@ -92,6 +92,31 @@ openscad-mcp-server/
      REMOTE_CUDA_MVS_API_KEY=your-remote-api-key  # For remote processing
      ```
 
+## Docker Installation (Alternative)
+
+For a containerized setup with all dependencies pre-installed:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/jhacksman/OpenSCAD-MCP-Server.git
+   cd OpenSCAD-MCP-Server
+   ```
+
+2. Set up environment variables:
+   ```bash
+   cp env.example .env
+   # Edit .env file and add your API keys
+   ```
+
+3. Build and run with Docker Compose:
+   ```bash
+   docker-compose up --build
+   ```
+
+4. Access the server at http://localhost:8080
+
+For detailed Docker instructions, including publishing to Docker Hub, see [DOCKER_README.md](DOCKER_README.md).
+
 ## Remote Processing Setup
 
 The server supports remote processing of computationally intensive tasks, particularly CUDA Multi-View Stereo reconstruction. This allows you to offload processing to more powerful machines within your LAN.
